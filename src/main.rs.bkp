@@ -1,0 +1,113 @@
+use std::env;
+extern crate dotenv;
+use::lettre::message::header::ContentType;
+use::lettre::transport::smtp::authentication::Credentials;
+use::lettre::{Message, SmtpTransport, Transport};
+#[macro_use] extern crate rocket;
+
+use rocket::serde::{Deserialize, Serialize, json::Json};
+
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+struct Email {
+    user: String,
+    horaFinal: String,
+    dia: u8,
+    destinatario: String,
+    actividad: String,
+}
+
+#[derive(Deserialize)]          // ← ADDED
+#[serde(crate = "rocket::serde")]
+struct EmailToken {
+    user: String,
+    token: String,
+    minutos: String,
+    destinatario: String,
+}
+
+#[derive(Serialize)]
+#[serde(crate = "rocket::serde")]
+struct ApiResponse {
+    message: String,
+}
+
+#[launch]
+fn rocket() -> _ {
+    dotenv::dotenv().ok();
+    rocket::build()
+        .mount("/api", routes![send_email, send_email_token])  // ← both handlers
+}
+
+#[post("/sendEmail", data = "<email>")]
+fn send_email(email: Json<Email>) -> Result<Json<ApiResponse>, Json<ApiResponse>> {
+    let dia = match email.0.dia {
+        1 => "lunes",
+        2 => "martes",
+        3 => "miercoles",
+        4 => "jueves",
+        5 => "viernes",
+        6 => "sabado",
+        7 => "domingo",
+        _ => {
+            return Err(Json(ApiResponse {
+                message: "Dia invalido".into(),
+            }))
+        }
+    };
+
+    let url = "https://www.upbplanner.online/";
+    let messagetosend = format!(
+        "Hola {}, desde la página de UPB Planner queremos recordarte que ya casi se acerca \
+         la fecha límite de tu actividad: {}, esta fue programad@ con una fecha de vencimiento: \
+         {} a las {}. Si necesitas revisarlo en detalle no olvides visitar la página oficial \
+         de UPB Planner, tu aliado de confianza en la U: {}.",
+        email.0.user, email.0.actividad, dia, email.0.horaFinal, url
+    );
+
+    send_smtp(messagetosend, &email.0.destinatario, "Recordatorio")
+}
+
+#[post("/sendEmailToken", data = "<email>")]  // ← renamed function
+fn send_email_token(email: Json<EmailToken>) -> Result<Json<ApiResponse>, Json<ApiResponse>> {
+    let url = "https://www.upbplanner.online";
+    let messagetosend = format!(
+        "Hola {}, desde la página de UPB Planner le enviamos el token de restablecimiento \
+         de la contraseña que usted solicitó:\n\n{}\n\nEste token fue programad@ para vencerse \
+         en {} minutos. Recuerda que si el tiempo caduca deberás realizar una solicitud nueva \
+         para obtener otro token.\n\n{}",
+        email.0.user, email.0.token, email.0.minutos, url
+    );
+
+    send_smtp(messagetosend, &email.0.destinatario, "Token de restablecimiento")
+}
+
+// Shared SMTP helper to avoid duplicating the send logic
+fn send_smtp(body: String, to: &str, subject: &str) -> Result<Json<ApiResponse>, Json<ApiResponse>> {
+    let emailsend = Message::builder()
+        .from("UPB Planner <upbplanner@gmail.com>".parse().unwrap())
+        .to(to.parse().unwrap())
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body)
+        .unwrap();
+
+    let credentials = Credentials::new(
+        env::var("Email").expect("env error"),
+        env::var("Password").expect("env error"),
+    );
+
+    let smtp = SmtpTransport::relay("smtp.gmail.com")
+        .unwrap()
+        .credentials(credentials)
+        .build();
+
+    match smtp.send(&emailsend) {
+        Ok(_) => Ok(Json(ApiResponse {
+            message: "Correo enviado correctamente".into(),
+        })),
+        Err(e) => Err(Json(ApiResponse {
+            message: format!("Error enviando correo: {:?}", e),
+        })),
+    }
+}

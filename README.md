@@ -1,1 +1,1 @@
-# PATO-email-sender
+# Email-service
