@@ -1,12 +1,14 @@
 #[macro_use]
 extern crate rocket;
-extern crate dotenv;
 
 use std::env;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use rocket::serde::{json::Json, Deserialize, Serialize};
+use rocket::http::Status;
+use rocket::response::{Responder, Response};
+use std::io::Cursor;
 
 
 #[derive(Deserialize)]
@@ -25,21 +27,93 @@ struct ApiResponse {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(crate = "rocket::serde")]
+struct ErrorResponse {
+    error_code: String,
+    message: String,
+    details: Option<String>,
+}
 
-fn build_smtp() -> Result<SmtpTransport, String> {
+enum EmailError {
+    MissingEnvVar(String),
+    InvalidSender,
+    InvalidRecipient(String),
+    InvalidMessage(String),
+    SmtpConfig(String),
+    SendFailed(String),
+}
+
+impl EmailError {
+    fn response(&self) -> (Status, Json<ErrorResponse>) {
+        match self {
+            EmailError::MissingEnvVar(var) => (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    error_code: "ENV_MISSING".to_string(),
+                    message: format!("Variable de entorno faltante: {}", var),
+                    details: None,
+                }),
+            ),
+            EmailError::InvalidSender => (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    error_code: "INVALID_SENDER".to_string(),
+                    message: "La direccion del remitente es invalida".to_string(),
+                    details: None,
+                }),
+            ),
+            EmailError::InvalidRecipient(email) => (
+                Status::BadRequest,
+                Json(ErrorResponse {
+                    error_code: "INVALID_RECIPIENT".to_string(),
+                    message: "Direccion de correo invalida".to_string(),
+                    details: Some(format!("'{}'", email)),
+                }),
+            ),
+            EmailError::InvalidMessage(msg) => (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    error_code: "INVALID_MESSAGE".to_string(),
+                    message: "Error al construir el mensaje de correo".to_string(),
+                    details: Some(msg.clone()),
+                }),
+            ),
+            EmailError::SmtpConfig(msg) => (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    error_code: "SMTP_CONFIG_ERROR".to_string(),
+                    message: "Error configurando SMTP".to_string(),
+                    details: Some(msg.clone()),
+                }),
+            ),
+            EmailError::SendFailed(msg) => (
+                Status::InternalServerError,
+                Json(ErrorResponse {
+                    error_code: "SEND_FAILED".to_string(),
+                    message: "Error enviando correo".to_string(),
+                    details: Some(msg.clone()),
+                }),
+            ),
+        }
+    }
+}
+
+
+fn build_smtp() -> Result<SmtpTransport, EmailError> {
     let user = env::var("Email")
-        .map_err(|_| "Variable de entorno 'Email' no encontrada".to_string())?;
+        .map_err(|_| EmailError::MissingEnvVar("Email".to_string()))?;
     let pass = env::var("Password")
-        .map_err(|_| "Variable de entorno 'Password' no encontrada".to_string())?;
+        .map_err(|_| EmailError::MissingEnvVar("Password".to_string()))?;
 
     SmtpTransport::relay("smtp.gmail.com")
-        .map_err(|e| format!("Error configurando SMTP: {:?}", e))
+        .map_err(|e| EmailError::SmtpConfig(format!("{:?}", e)))
         .map(|t| t.credentials(Credentials::new(user, pass)).build())
 }
 
 
 #[post("/sendEmailToken", data = "<email>")]
-fn send_email_token(email: Json<EmailToken>) -> Result<Json<ApiResponse>, Json<ApiResponse>> {
+fn send_email_token(email: Json<EmailToken>) -> Result<Json<ApiResponse>, (Status, Json<ErrorResponse>)> {
     let body = format!(
     r#"
     <!DOCTYPE html>
@@ -59,7 +133,7 @@ fn send_email_token(email: Json<EmailToken>) -> Result<Json<ApiResponse>, Json<A
         <div class="container">
             <div class="content">
                 <p>Hola <strong>{}</strong>,</p>
-                <p>Le enviamos el token de restablecimiento de la contraseña que usted solicitó:</p>
+                <p>Le enviamos el token de restablecimiento de la contrasena que usted solicito:</p>
             </div>
             <div class="token-box">
                 <span class="token">{}</span>
@@ -80,34 +154,34 @@ fn send_email_token(email: Json<EmailToken>) -> Result<Json<ApiResponse>, Json<A
 );
 
     let sender = env::var("Email")
-        .map_err(|_| Json(ApiResponse { message: "Variable de entorno 'Email' no encontrada".to_string() }))?;
+        .map_err(|_| EmailError::MissingEnvVar("Email".to_string()).response())?;
     let from = format!("PATO <{}>", sender);
 
     let message = Message::builder()
         .from(
             from.parse()
-                .map_err(|e| Json(ApiResponse { message: format!("Remitente inválido: {:?}", e) }))?,
+                .map_err(|_| EmailError::InvalidSender.response())?,
         )
         .to(email
             .destinatario
             .parse()
-            .map_err(|e| Json(ApiResponse { message: format!("Destinatario inválido: {:?}", e) }))?)
+            .map_err(|_| EmailError::InvalidRecipient(email.destinatario.clone()).response())?)
         .subject("Token de recuperación")
         .header(ContentType::TEXT_HTML)
         .body(body)
-        .map_err(|e| Json(ApiResponse { message: format!("Error construyendo mensaje: {:?}", e) }))?;
+        .map_err(|e| EmailError::InvalidMessage(format!("{:?}", e)).response())?;
 
     let smtp = build_smtp()
-        .map_err(|e| Json(ApiResponse { message: e }))?;
+        .map_err(|e| e.response())?;
 
     smtp.send(&message)
         .map(|_| Json(ApiResponse { message: "Correo de token enviado correctamente".into() }))
-        .map_err(|e| Json(ApiResponse { message: format!("Error enviando correo: {:?}", e) }))
+        .map_err(|e| EmailError::SendFailed(format!("{:?}", e)).response())
 }
 
 #[launch]
 fn rocket() -> _ {
-    dotenv::dotenv().ok(); // <------ Prod
+    dotenvy::dotenv().ok();
     rocket::build().mount("/api", routes![send_email_token])
 }
 /*
