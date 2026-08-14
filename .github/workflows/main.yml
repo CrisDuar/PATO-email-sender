@@ -34,5 +34,5 @@ jobs:
           context: .
           push: true
           tags: |
-            cris27dev/${{ env.REPOSITORY }}:latest
-            cris27dev/${{ env.REPOSITORY }}:${{ github.sha }}      
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.REPOSITORY }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.REPOSITORY }}:${{ github.sha }}      
