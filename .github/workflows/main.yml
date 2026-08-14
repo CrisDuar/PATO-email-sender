@@ -20,10 +20,19 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       
+      - name: Set repository name
+        run: |
+          a=${{ github.repository }}
+          b=${a#*/}
+          echo "REPOSITORY=$(echo $b | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
-          tags: cris27dev/pato-email-sender:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.REPOSITORY }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.REPOSITORY }}:${{ github.sha }}      
