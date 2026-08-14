@@ -19,8 +19,10 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           
         run: |
-          install -m 600 -D /dev/null ~/.ssh/id_rsa
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H $SSH_HOST> ~/.ssh/known_hosts
 
       - name: Connect & Pull
@@ -30,11 +32,12 @@ jobs:
           WORK_DIR: ${{ secrets.WORK_DIR }}
 
         run: |
-          ssh $SSH_USER@$SSH_HOST "
+          ssh -i ~/.ssh/id_rsa $SSH_USER@$SSH_HOST "
             cd $WORK_DIR
             docker compose pull
             docker compose up -d
           "
         
       - name: Clean Up
+        if: always()
         run: rm -rf ~/.ssh
